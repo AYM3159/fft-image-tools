@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FFT Image Encoder</title>
+  <style>
+    body { font-family: sans-serif; padding: 10px; max-width: 95%; margin: auto; }
+    canvas { border: 1px solid #ccc; margin: 8px 0; display: block; }
+    label { display: inline-block; margin-right: 1em; }
+    input[readonly] { width: 6em; }
+    .controls { margin: 1em 0; }
+	.container { display: flex; gap: 20px; margin: 20px 0; }
+	button {
+		padding: 5px 10px;
+		margin: 5px;
+		font-size: 12px;
+		cursor: pointer;
+	}
+  </style>
+</head>
+<body>
+  <h1>FFT Image Encoder</h1>
+  <input type="file" id="imgInput" accept="image/*">
+
+  <div class="controls">
+    Original: <span id="origSize">–</span>
+    &nbsp;→ Padded: <span id="padSize">–</span>
+    &nbsp;Max Magnitude: <input id="maxMag" readonly>
+  </div>
+	<div class="container">
+	<button id="downloadmagPack1" disabled>Download Magnitude Pack 1</button>
+	<button id="downloadmagPack2" disabled>Download Magnitude Pack 2</button>
+	<button id="downloadphasePack" disabled>Download Phase Pack</button>
+	</div>
+  <div class="container">
+  <canvas id="magPack1"></canvas>
+  <canvas id="magPack2"></canvas>
+  <canvas id="phasePack"></canvas>
+  </div>
+  <script>
+  class Complex {
+    constructor(re,im){this.re=re;this.im=im;}
+    add(o){return new Complex(this.re+o.re,this.im+o.im);}
+    sub(o){return new Complex(this.re-o.re,this.im-o.im);}
+    mul(o){return new Complex(
+      this.re*o.re - this.im*o.im,
+      this.re*o.im + this.im*o.re
+    );}
+    abs(){return Math.hypot(this.re,this.im);}
+    phase(){return Math.atan2(this.im,this.re);}
+  }
+  function fft1D(x){
+    const N=x.length;
+    if(N<=1) return x;
+    const ev=fft1D(x.filter((_,i)=>i%2===0)),
+          od=fft1D(x.filter((_,i)=>i%2===1)),
+          out=new Array(N);
+    for(let k=0;k<N/2;k++){
+      const t=new Complex(Math.cos(-2*Math.PI*k/N),Math.sin(-2*Math.PI*k/N)).mul(od[k]);
+      out[k]       = ev[k].add(t);
+      out[k+N/2]   = ev[k].sub(t);
+    }
+    return out;
+  }
+  function fft2D(mat,PW,PH){
+    let tmp=Array.from({length:PH},()=>Array(PW)),
+        res=Array.from({length:PH},()=>Array(PW));
+    for(let y=0;y<PH;y++){
+      const row=mat[y].map(v=>new Complex(v,0)),
+            f=fft1D(row);
+      for(let x=0;x<PW;x++) tmp[y][x]=f[x];
+    }
+    for(let x=0;x<PW;x++){
+      const col=tmp.map(r=>r[x]),
+            f=fft1D(col);
+      for(let y=0;y<PH;y++) res[y][x]=f[y];
+    }
+    return res;
+  }
+  function fftshift2D(arr, width, height) {
+  const shifted = new Array(height);
+  for (let y = 0; y < height; y++) {
+    shifted[y] = new Array(width);
+    for (let x = 0; x < width; x++) {
+      const srcX = (x + width / 2) % width;
+      const srcY = (y + height / 2) % height;
+      shifted[y][x] = arr[srcY][srcX];
+    }
+  }
+  return shifted;
+}
+  const imgInput    = document.getElementById('imgInput'),
+        origSizeEl  = document.getElementById('origSize'),
+        padSizeEl   = document.getElementById('padSize'),
+        maxMagFld   = document.getElementById('maxMag'),
+        mp1Ctx      = document.getElementById('magPack1').getContext('2d'),
+        mp2Ctx      = document.getElementById('magPack2').getContext('2d'),
+        ppCtx       = document.getElementById('phasePack').getContext('2d');
+
+  imgInput.onchange = e=>{
+    const file=e.target.files[0];
+    if(!file) return;
+    const img=new Image();
+    img.onload=()=>encrypt(img);
+    img.src=URL.createObjectURL(file);
+  };
+
+  function encrypt(img){
+    const W=img.width, H=img.height;
+    origSizeEl.textContent=`${W}×${H}`;
+    // compute padded
+    const PW=1<<Math.ceil(Math.log2(W)),
+          PH=1<<Math.ceil(Math.log2(H));
+    padSizeEl.textContent=`${PW}×${PH}`;
+
+    // draw / pad onto temp
+    const tmp=document.createElement('canvas');
+    tmp.width=PW; tmp.height=PH;
+    const tctx=tmp.getContext('2d');
+    tctx.clearRect(0,0,PW,PH);
+    tctx.drawImage(img,0,0,W,H);
+
+    // sample RGBA
+    const pix=tctx.getImageData(0,0,PW,PH).data;
+    const build=ch=>Array.from({length:PH},(_,y)=>
+      Array.from({length:PW},(_,x)=>pix[4*(y*PW+x)+ch]||0)
+    );
+
+	const Rmat = fftshift2D(fft2D(build(0), PW, PH), PW, PH),
+		  Gmat = fftshift2D(fft2D(build(1), PW, PH), PW, PH),
+		  Bmat = fftshift2D(fft2D(build(2), PW, PH), PW, PH);
+
+    // magnitudes + max
+    const N=PW*PH;
+    const magR=new Float64Array(N),
+          magG=new Float64Array(N),
+          magB=new Float64Array(N);
+    let maxM=0;
+    for(let i=0;i<N;i++){
+      const y=(i/PW)|0, x=i%PW;
+      const aR=Rmat[y][x].abs(),
+            aG=Gmat[y][x].abs(),
+            aB=Bmat[y][x].abs();
+      magR[i]=aR; magG[i]=aG; magB[i]=aB;
+      maxM=Math.max(maxM,aR,aG,aB);
+    }
+    maxMagFld.value=maxM;
+
+    // phases
+    const phR=new Uint8ClampedArray(N),
+          phG=new Uint8ClampedArray(N),
+          phB=new Uint8ClampedArray(N);
+    for(let i=0;i<N;i++){
+      const y=(i/PW)|0, x=i%PW;
+      phR[i]=Math.round((Rmat[y][x].phase()+Math.PI)/(2*Math.PI)*255);
+      phG[i]=Math.round((Gmat[y][x].phase()+Math.PI)/(2*Math.PI)*255);
+      phB[i]=Math.round((Bmat[y][x].phase()+Math.PI)/(2*Math.PI)*255);
+    }
+
+    // pack1: R_hi,R_lo,G_hi
+    magPack1.width=PW; magPack1.height=PH;
+    const img1=mp1Ctx.createImageData(PW,PH), d1=img1.data;
+    for(let i=0;i<N;i++){
+      const vR=Math.round(magR[i]/maxM*65535),
+            vG=Math.round(magG[i]/maxM*65535);
+      d1[4*i  ]=(vR>>8)&0xFF;
+      d1[4*i+1]=vR&0xFF;
+      d1[4*i+2]=(vG>>8)&0xFF;
+      d1[4*i+3]=255;
+    }
+    mp1Ctx.putImageData(img1,0,0);
+
+    // pack2: G_lo,B_hi,B_lo
+    magPack2.width=PW; magPack2.height=PH;
+    const img2=mp2Ctx.createImageData(PW,PH), d2=img2.data;
+    for(let i=0;i<N;i++){
+      const vG=Math.round(magG[i]/maxM*65535),
+            vB=Math.round(magB[i]/maxM*65535);
+      d2[4*i  ]=vG&0xFF;
+      d2[4*i+1]=(vB>>8)&0xFF;
+      d2[4*i+2]=vB&0xFF;
+      d2[4*i+3]=255;
+    }
+    mp2Ctx.putImageData(img2,0,0);
+
+    // phasePack
+    phasePack.width=PW; phasePack.height=PH;
+    const imgP=ppCtx.createImageData(PW,PH), dP=imgP.data;
+    for(let i=0;i<N;i++){
+      dP[4*i  ]=phR[i];
+      dP[4*i+1]=phG[i];
+      dP[4*i+2]=phB[i];
+      dP[4*i+3]=255;
+    }
+    ppCtx.putImageData(imgP,0,0);
+	
+	downloadmagPack1.disabled=false
+	downloadmagPack2.disabled=false
+	downloadphasePack.disabled=false
+  }
+	
+  
+	document.getElementById('downloadmagPack1').addEventListener('click', () => {
+		const link = document.createElement('a');
+		link.download = 'magPack1.png';
+		link.href = magPack1.toDataURL();
+		link.click();
+	});
+
+	document.getElementById('downloadmagPack2').addEventListener('click', () => {
+		const link = document.createElement('a');
+		link.download = 'magPack2.png';
+		link.href = magPack2.toDataURL();
+		link.click();
+	});
+
+	document.getElementById('downloadphasePack').addEventListener('click', () => {
+		const link = document.createElement('a');
+		link.download = 'phasePack.png';
+		link.href = phasePack.toDataURL();
+		link.click();
+	}); 
+  </script>
+</body>
+</html>
