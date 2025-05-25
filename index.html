@@ -426,9 +426,12 @@ dec_runBtn.onclick = () => {
 
   const outImg = dec_oCtx.createImageData(PW, PH), od = outImg.data;
   for (let i = 0; i < N; i++) {
-    od[4 * i]     = Math.round((R[i] - mn) / rng * 255);
-    od[4 * i + 1] = Math.round((G[i] - mn) / rng * 255);
-    od[4 * i + 2] = Math.round((B[i] - mn) / rng * 255);
+    const r = Math.round(R[i]);
+    const g = Math.round(G[i]);
+    const b = Math.round(B[i]);
+    od[4 * i]     = r < 0 ? 0 : (r > 255 ? 255 : r);
+    od[4 * i + 1] = g < 0 ? 0 : (g > 255 ? 255 : g);
+    od[4 * i + 2] = b < 0 ? 0 : (b > 255 ? 255 : b);
     od[4 * i + 3] = 255;
   }
 
