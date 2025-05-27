@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FFT Image Tool</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+      color: #222;
+    }
+    header {
+      background: #333;
+      color: white;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      flex-wrap: wrap;
+    }
+	.title {
+      font-size: 1.75rem;
+      font-weight: bold;
+    }
+    .nav-buttons {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .nav-buttons button {
+      background: #555;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+    .nav-buttons button:hover {
+      background: #777;
+    }
+	main {
+      max-width: 70%;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+	h1, h2 {
+      margin-top: 2rem;
+    }
+    p {
+      line-height: 1.3;
+    }
+    .section { display: none; padding: 10px; }
+    .section.active { display: block; }
+    canvas { border: 1px solid #ccc; display: block; margin: 10px 0; }
+    label { display: block; margin: 1em 0 0.5em; }
+    input[readonly], input[type="number"] { width: 12em; font-size: 1em; }
+    .container { display: flex; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+  </style> 
+</head>
+<body>
+<header>
+  <div class="title">FFT RGB 24-Bit Encoder</div>
+ 	<a id="homeBtn" title="Home" href="../index.html" style="margin-right: 10px;">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+    <path d="M3 9.5L12 3L21 9.5V20C21 20.55 20.55 21 20 21H15C14.45 21 14 20.55 14 20V15C14 14.45 13.55 14 13 14H11C10.45 14 10 14.45 10 15V20C10 20.55 9.55 21 9 21H4C3.45 21 3 20.55 3 20V9.5Z"/>
+    </svg>
+	</a>
+  <div class="nav-buttons">
+    <button onclick="switchSection('encode')">Encode</button>
+    <button onclick="switchSection('decode')">Decode</button>
+  </div>
+</header>
+
+<!-- Encode Section -->
+<div id="encode" class="section active">
+  <p><input type="file" id="enc_imgInput" accept="image/*"></p>
+  <div>
+    Original: <span id="enc_origSize">–</span>
+    &nbsp;→ Padded: <span id="enc_padSize">–</span>
+    &nbsp;Max Magnitude: <input id="enc_maxMag" readonly>
+  </div>
+  <div class="container">
+    <!-- Image Pack downloads -->
+	<button id="enc_dwlAllBtn" disabled>Download Encoded Images</button>
+  </div>
+  <div class="container">
+    <!-- magnitude canvases -->
+	<p><canvas id="enc_magPackR"></canvas>
+    <canvas id="enc_magPackG"></canvas>
+    <canvas id="enc_magPackB"></canvas></p>
+    <!-- phase canvases -->
+    <p><canvas id="enc_phasePackR"></canvas>
+    <canvas id="enc_phasePackG"></canvas>
+    <canvas id="enc_phasePackB"></canvas></p>
+  </div>
+</div>
+
+<!-- Decode Section -->
+<div id="decode" class="section">
+  <p><label>⠀⠀Magnitude R: <input type="file" id="dec_magR" accept="image/*"></label>
+  <label>⠀⠀Magnitude G: <input type="file" id="dec_magG" accept="image/*"></label>
+  <label>⠀⠀Magnitude B: <input type="file" id="dec_magB" accept="image/*"></label></p>
+  <p><label>⠀⠀⠀⠀⠀Phase R: <input type="file" id="dec_phaseR" accept="image/*"></label>
+  <label>⠀ ⠀⠀ ⠀Phase G: <input type="file" id="dec_phaseG" accept="image/*"></label>
+  <label>⠀⠀⠀⠀⠀Phase B: <input type="file" id="dec_phaseB" accept="image/*"></label></p>
+  <p><label>Max Magnitude: <input type="number" id="dec_maxMag" step="any"></label>
+  <div class="container">
+    <button id="dec_runBtn" disabled>Decode</button>
+    <button id="dec_dwlBtn" disabled>Download</button>
+  </div>
+  <div class="container">
+    <canvas id="dec_out"></canvas>
+  </div>
+</div>
+
+<script>
+// ---------- Top Bar Switching ----------
+function switchSection(section) {
+  document.getElementById('encode').classList.remove('active');
+  document.getElementById('decode').classList.remove('active');
+  document.getElementById(section).classList.add('active');
+  document.getElementById('pageTitle').textContent =
+    section === 'encode' ? 'FFT RGB 24-Bit Encoder' : 'FFT RGB 24-Bit Decoder';
+}
+
+// ---------- Encode Logic (Updated for 24-bit magnitude per channel) ----------
+class enc_Complex {
+  constructor(re, im) { this.re = re; this.im = im; }
+  add(o) { return new enc_Complex(this.re + o.re, this.im + o.im); }
+  sub(o) { return new enc_Complex(this.re - o.re, this.im - o.im); }
+  mul(o) {
+    return new enc_Complex(
+      this.re * o.re - this.im * o.im,
+      this.re * o.im + this.im * o.re
+    );
+  }
+  abs() { return Math.hypot(this.re, this.im); }
+  phase() { return Math.atan2(this.im, this.re); }
+}
+
+function enc_fft1D(x) {
+  const N = x.length;
+  if (N <= 1) return x;
+  const ev = enc_fft1D(x.filter((_, i) => i % 2 === 0));
+  const od = enc_fft1D(x.filter((_, i) => i % 2 === 1));
+  const out = new Array(N);
+  for (let k = 0; k < N / 2; k++) {
+    const t = new enc_Complex(
+      Math.cos(-2 * Math.PI * k / N),
+      Math.sin(-2 * Math.PI * k / N)
+    ).mul(od[k]);
+    out[k] = ev[k].add(t);
+    out[k + N / 2] = ev[k].sub(t);
+  }
+  return out;
+}
+
+function enc_fft2D(mat, w, h) {
+  let tmp = Array.from({ length: h }, () => Array(w));
+  let res = Array.from({ length: h }, () => Array(w));
+  for (let y = 0; y < h; y++) {
+    const row = mat[y].map(v => new enc_Complex(v, 0));
+    const f = enc_fft1D(row);
+    for (let x = 0; x < w; x++) tmp[y][x] = f[x];
+  }
+  for (let x = 0; x < w; x++) {
+    const col = tmp.map(r => r[x]);
+    const f = enc_fft1D(col);
+    for (let y = 0; y < h; y++) res[y][x] = f[y];
+  }
+  return res;
+}
+
+function enc_fftshift2D(arr, w, h) {
+  const shifted = new Array(h);
+  for (let y = 0; y < h; y++) {
+    shifted[y] = new Array(w);
+    for (let x = 0; x < w; x++) {
+      const srcX = (x + w / 2) % w;
+      const srcY = (y + h / 2) % h;
+      shifted[y][x] = arr[srcY][srcX];
+    }
+  }
+  return shifted;
+}
+
+document.getElementById('enc_imgInput').onchange = e => {
+  const file = e.target.files[0]; if (!file) return;
+  const img = new Image(); img.onload = () => {
+    if (img.width > 4095 || img.height > 4095) {
+      alert("Image too large. Maximum supported dimensions are 4095×4095.");
+      return;
+    }
+    enc_encrypt(img);
+  };
+  img.src = URL.createObjectURL(file);
+};
+
+function enc_encrypt(img) {
+  const W = img.width, H = img.height;
+  const PW = 1 << Math.ceil(Math.log2(W)), PH = 1 << Math.ceil(Math.log2(H));
+  document.getElementById('enc_origSize').textContent = `${W}×${H}`;
+  document.getElementById('enc_padSize').textContent = `${PW}×${PH}`;
+
+  // draw & extract
+  const tmp = document.createElement('canvas');
+  tmp.width = PW; tmp.height = PH;
+  const tctx = tmp.getContext('2d');
+  tctx.drawImage(img, 0, 0, W, H);
+  const pix = tctx.getImageData(0,0,PW,PH).data;
+  const build = ch => Array.from({ length: PH }, (_, y) =>
+    Array.from({ length: PW }, (_, x) => pix[4*(y*PW+x)+ch] || 0)
+  );
+
+  // FFT + shift
+  const Rf = enc_fftshift2D(enc_fft2D(build(0),PW,PH),PW,PH);
+  const Gf = enc_fftshift2D(enc_fft2D(build(1),PW,PH),PW,PH);
+  const Bf = enc_fftshift2D(enc_fft2D(build(2),PW,PH),PW,PH);
+
+  const N = PW*PH;
+  const magR = new Float64Array(N), magG = new Float64Array(N), magB = new Float64Array(N);
+  let maxM = 0;
+  for (let i = 0; i < N; i++) {
+    magR[i] = Rf[(i/PW)|0][i%PW].abs();
+    magG[i] = Gf[(i/PW)|0][i%PW].abs();
+    magB[i] = Bf[(i/PW)|0][i%PW].abs();
+    maxM = Math.max(maxM, magR[i], magG[i], magB[i]);
+  }
+
+  // bit-pack dims into fractional part
+  const bitPacked = (W << 12) | H;
+  const maxM_packed = maxM + (bitPacked / 16777216);
+  document.getElementById('enc_maxMag').value = maxM_packed.toFixed(8);
+
+  // prepare canvases & contexts
+  const ids = ['magPackR','magPackG','magPackB','phasePackR','phasePackG','phasePackB'];
+  const canv = {}, ctx = {}, data = {};
+  ids.forEach(id => {
+    canv[id] = document.getElementById('enc_' + id);
+    canv[id].width = PW; canv[id].height = PH;
+    ctx[id] = canv[id].getContext('2d');
+    data[id] = ctx[id].createImageData(PW,PH);
+  });
+
+  // fill pixel data
+  for (let i = 0; i < N; i++) {
+    const y = (i / PW) | 0, x = i % PW;
+    // normalized 24-bit magnitude
+    const norm = arr => Math.round(arr[i] / maxM * 16777215);
+    const mR = norm(magR), mG = norm(magG), mB = norm(magB);
+    [[mR,'magPackR'],[mG,'magPackG'],[mB,'magPackB']].forEach(([v,id])=>{
+      const b2=(v>>16)&0xFF, b1=(v>>8)&0xFF, b0=v&0xFF;
+      data[id].data.set([b2,b1,b0,255], i*4);
+    });
+
+    // normalized 24-bit phase
+    const packPhase = comp => {
+      const φ = comp.phase(); // –π..+π
+      return Math.round((φ + Math.PI) / (2*Math.PI) * 16777215);
+    };
+    const pR = packPhase(Rf[y][x]),
+          pG = packPhase(Gf[y][x]),
+          pB = packPhase(Bf[y][x]);
+    [[pR,'phasePackR'],[pG,'phasePackG'],[pB,'phasePackB']].forEach(([v,id])=>{
+      const b2=(v>>16)&0xFF, b1=(v>>8)&0xFF, b0=v&0xFF;
+      data[id].data.set([b2,b1,b0,255], i*4);
+    });
+  }
+
+  // draw into canvases
+  ids.forEach(id => ctx[id].putImageData(data[id],0,0));
+
+  // enable download button
+  ['dwlAllBtn']
+    .forEach(suf => document.getElementById(`enc_${suf}`).disabled = false);
+}
+
+// Download handlers
+document.getElementById('enc_dwlAllBtn').onclick = () => {
+  function downloadCanvas(canvas, name) {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = name + '.png';
+    a.click();
+  }
+
+  downloadCanvas(document.getElementById('enc_magPackR'), 'magnitude_R');
+  downloadCanvas(document.getElementById('enc_magPackG'), 'magnitude_G');
+  downloadCanvas(document.getElementById('enc_magPackB'), 'magnitude_B');
+  downloadCanvas(document.getElementById('enc_phasePackR'), 'phase_R');
+  downloadCanvas(document.getElementById('enc_phasePackG'), 'phase_G');
+  downloadCanvas(document.getElementById('enc_phasePackB'), 'phase_B');
+};
+
+
+// ---------- Decode Logic ----------
+function dec_fft(re, im) {
+  const N = re.length;
+  if (N <= 1) return;
+  const H = N >> 1;
+  const rE = new Float64Array(H), iE = new Float64Array(H);
+  const rO = new Float64Array(H), iO = new Float64Array(H);
+  for (let k = 0; k < H; k++) {
+    rE[k] = re[2*k]; iE[k] = im[2*k];
+    rO[k] = re[2*k+1]; iO[k] = im[2*k+1];
+  }
+  dec_fft(rE, iE); dec_fft(rO, iO);
+  for (let k = 0; k < H; k++) {
+    const ang = -2 * Math.PI * k / N;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    const tr = c * rO[k] - s * iO[k];
+    const ti = s * rO[k] + c * iO[k];
+    re[k]     = rE[k] + tr;
+    im[k]     = iE[k] + ti;
+    re[k+H]  = rE[k] - tr;
+    im[k+H]  = iE[k] - ti;
+  }
+}
+
+function dec_ifft(re, im) {
+  for (let i = 0; i < im.length; i++) im[i] = -im[i];
+  dec_fft(re, im);
+  const N = re.length;
+  for (let i = 0; i < N; i++) {
+    re[i] /= N;
+    im[i] = -im[i] / N;
+  }
+}
+
+function dec_ifft2D(re, im, w, h) {
+  const rowRe = new Float64Array(w), rowIm = new Float64Array(w);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      rowRe[x] = re[y*w + x];
+      rowIm[x] = im[y*w + x];
+    }
+    dec_ifft(rowRe, rowIm);
+    for (let x = 0; x < w; x++) {
+      re[y*w + x] = rowRe[x];
+      im[y*w + x] = rowIm[x];
+    }
+  }
+  const colRe = new Float64Array(h), colIm = new Float64Array(h);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      colRe[y] = re[y*w + x];
+      colIm[y] = im[y*w + x];
+    }
+    dec_ifft(colRe, colIm);
+    for (let y = 0; y < h; y++) {
+      re[y*w + x] = colRe[y];
+      im[y*w + x] = colIm[y];
+    }
+  }
+}
+
+function dec_ifftshift2D(arr, w, h) {
+  const out = Array.from({ length: h }, () => Array(w));
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dstX = (x + w/2) % w;
+      const dstY = (y + h/2) % h;
+      out[y][x] = arr[dstY][dstX];
+    }
+  }
+  return out;
+}
+
+// DOM elements
+const dec_inR  = document.getElementById('dec_magR');
+const dec_inG  = document.getElementById('dec_magG');
+const dec_inB  = document.getElementById('dec_magB');
+const dec_inPR = document.getElementById('dec_phaseR');
+const dec_inPG = document.getElementById('dec_phaseG');
+const dec_inPB = document.getElementById('dec_phaseB');
+const dec_max  = document.getElementById('dec_maxMag');
+const btnRun   = document.getElementById('dec_runBtn');
+const btnDwl   = document.getElementById('dec_dwlBtn');
+const canvasOut = document.getElementById('dec_out');
+const ctxOut    = canvasOut.getContext('2d');
+
+let imgR = null, imgG = null, imgB = null;
+let imgPR = null, imgPG = null, imgPB = null;
+
+dec_inR.onchange = e => loadImg(e, fileImg => { imgR = fileImg; checkInputs(); });
+dec_inG.onchange = e => loadImg(e, fileImg => { imgG = fileImg; checkInputs(); });
+dec_inB.onchange = e => loadImg(e, fileImg => { imgB = fileImg; checkInputs(); });
+dec_inPR.onchange= e => loadImg(e, fileImg => { imgPR = fileImg; checkInputs(); });
+dec_inPG.onchange= e => loadImg(e, fileImg => { imgPG = fileImg; checkInputs(); });
+dec_inPB.onchange= e => loadImg(e, fileImg => { imgPB = fileImg; checkInputs(); });
+
+// helper to DRY up image loading
+function loadImg(event, callback) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const img = new Image();
+  img.onload = () => callback(img);
+  img.src = URL.createObjectURL(file);
+}
+
+dec_max.oninput = checkInputs;
+
+function checkInputs() {
+  btnRun.disabled = !(
+    imgR && imgG && imgB &&
+    imgPR && imgPG && imgPB &&
+    parseFloat(dec_max.value) > 0
+  );
+}
+
+btnRun.onclick = () => {
+  const raw = parseFloat(dec_max.value);
+  const intM = Math.floor(raw);
+  const frac = raw - intM;
+  let origW=null, origH=null;
+  if (frac>0) {
+    const bits = Math.round(frac*16777216);
+    origW = bits>>12;
+    origH = bits&0xFFF;
+  }
+
+  const PW = imgR.width, PH = imgR.height;
+  // draw inputs to canvases
+  const mkCanvas = img=> {
+    const c=document.createElement('canvas');
+    c.width=PW; c.height=PH;
+    c.getContext('2d').drawImage(img,0,0);
+    return c.getContext('2d').getImageData(0,0,PW,PH).data;
+  };
+  const dR  = mkCanvas(imgR),
+        dG  = mkCanvas(imgG),
+        dB  = mkCanvas(imgB),
+        dPR = mkCanvas(imgPR),
+        dPG = mkCanvas(imgPG),
+        dPB = mkCanvas(imgPB);
+
+  const N = PW*PH;
+  const magR = new Float64Array(N),
+        magG = new Float64Array(N),
+        magB = new Float64Array(N),
+        phR  = new Float64Array(N),
+        phG  = new Float64Array(N),
+        phB  = new Float64Array(N);
+
+  for (let i=0; i<N; i++) {
+    // unpack 24-bit magnitude
+    const unpack = (d)=>{
+      const b2=d[4*i], b1=d[4*i+1], b0=d[4*i+2];
+      return ((b2<<16)|(b1<<8)|b0)/16777215 * intM;
+    };
+    magR[i] = unpack(dR);
+    magG[i] = unpack(dG);
+    magB[i] = unpack(dB);
+
+    // unpack 24-bit phase
+    const unpackPhase = (d)=>{
+      const v = ((d[4*i]<<16)|(d[4*i+1]<<8)|d[4*i+2]) / 16777215;
+      return v * 2*Math.PI - Math.PI;
+    };
+    phR[i] = unpackPhase(dPR);
+    phG[i] = unpackPhase(dPG);
+    phB[i] = unpackPhase(dPB);
+  }
+
+  // reconstruct a channel
+  function reconstruct(mag, ph) {
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let i=0;i<N;i++){
+      re[i] = mag[i]*Math.cos(ph[i]);
+      im[i] = mag[i]*Math.sin(ph[i]);
+    }
+    // inverse shift
+    const m2D = Array.from({length:PH},(_,y)=>re.slice(y*PW,(y+1)*PW));
+    const i2D = Array.from({length:PH},(_,y)=>im.slice(y*PW,(y+1)*PW));
+    const usm = dec_ifftshift2D(m2D,PW,PH);
+    const usi = dec_ifftshift2D(i2D,PW,PH);
+    for (let y=0;y<PH;y++) for (let x=0;x<PW;x++){
+      const idx = y*PW+x;
+      re[idx] = usm[y][x];
+      im[idx] = usi[y][x];
+    }
+    dec_ifft2D(re, im, PW, PH);
+    return re;
+  }
+
+  const R = reconstruct(magR, phR);
+  const G = reconstruct(magG, phG);
+  const B = reconstruct(magB, phB);
+
+  // clamp & draw
+  const out = ctxOut.createImageData(PW,PH);
+  for (let i=0;i<N;i++){
+    const rc = Math.round(R[i]),
+          gc = Math.round(G[i]),
+          bc = Math.round(B[i]);
+    out.data[4*i]   = rc<0?0:rc>255?255:rc;
+    out.data[4*i+1] = gc<0?0:gc>255?255:gc;
+    out.data[4*i+2] = bc<0?0:bc>255?255:bc;
+    out.data[4*i+3] = 255;
+  }
+
+  if (origW && origH) {
+    canvasOut.width=origW; canvasOut.height=origH;
+    ctxOut.putImageData(out,0,0,0,0,origW,origH);
+  } else {
+    canvasOut.width=PW; canvasOut.height=PH;
+    ctxOut.putImageData(out,0,0);
+  }
+
+  btnDwl.disabled = false;
+  btnRun.disabled = true;
+};
+
+btnDwl.onclick = () => {
+  const link = document.createElement('a');
+  link.download = 'DecodedImage.png';
+  link.href = canvasOut.toDataURL();
+  link.click();
+};
+</script>
+</body>
+</html>
